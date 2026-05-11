@@ -1,5 +1,7 @@
 import numpy as np
 from scipy.ndimage import map_coordinates
+import matplotlib.pyplot as plt
+from lmfit import Model
 
 def diagonal_resample_square(M, frac=0.5, half_size=50, dx=1.0):
     """
@@ -94,3 +96,153 @@ def diagonal_resample_square(M, frac=0.5, half_size=50, dx=1.0):
     boundary = np.vstack([corners, corners[0]])
 
     return Mrot, xprime, yprime, x0, y0, xprime_max, corners, boundary
+
+
+
+
+def ridge_model(x, amp, xp0, lam, bg):
+    """
+    Exponential ridge model:
+        y = bg + amp * exp(-abs(x - xp0) / lam)
+    """
+    return bg + amp * np.exp(-np.abs(x - xp0) / lam)
+
+
+def fit_ridge_amplitude(
+    x,
+    y,
+    ridge_width=4,
+    cen_width=2,
+    make_plot=False
+):
+    """
+    Fit a symmetric exponential ridge profile near x = 0 and return the
+    fitted peak height at x = 0 (including background).
+
+    Parameters
+    ----------
+    x : array_like
+        x coordinates.
+    y : array_like
+        Data values corresponding to x.
+    ridge_width : int, optional
+        Only points with |x| <= ridge_width are considered.
+    cen_width : int, optional
+        Points with |x| <= cen_width are excluded from the fit.
+    make_plot : bool, optional
+        If True, generate a diagnostic plot.
+
+    Returns
+    -------
+    peak_height : float
+        Value of the fitted function at x = 0, including background.
+    """
+
+    x = np.asarray(x)
+    y = np.asarray(y)
+
+    # Select points within the fitting window
+    window_mask = np.abs(x) <= ridge_width
+    x_window = x[window_mask]
+    y_window = y[window_mask]
+
+    if len(x_window) == 0:
+        raise ValueError("No data points found within ridge_width.")
+
+    # Exclude the central region
+    fit_mask = np.abs(x_window) > cen_width
+    xfit = x_window[fit_mask]
+    yfit = y_window[fit_mask]
+
+    if len(xfit) < 4:
+        raise ValueError(
+            "Not enough points remain after excluding the central region."
+        )
+
+    # Build model
+    model = Model(ridge_model)
+
+    # Initial guesses
+    params = model.make_params(
+        amp=np.max(yfit) - np.min(yfit),
+        xp0=ridge_width / 2,
+        lam=max(1.0, ridge_width),
+        bg=np.min(yfit)
+    )
+
+    # Constraints
+    params['lam'].min = 1e-6
+    params['xp0'].min = -ridge_width
+    params['xp0'].max = ridge_width
+
+    # Perform fit
+    result = model.fit(yfit, params, x=xfit)
+
+    # Peak height at x = 0 (includes background)
+    peak_height = result.eval(x=np.array([0.0]))[0]
+
+    # Optional diagnostic plot
+    if make_plot:
+        xplot = np.linspace(x_window.min(), x_window.max(), 400)
+        yplot = result.eval(x=xplot)
+
+        plt.figure()
+
+        # All points in the fitting window
+        plt.plot(
+            x_window, y_window, 'o',
+            color='0.75',
+            label='all points in window'
+        )
+
+        # Points used in the fit
+        plt.plot(
+            xfit, yfit, 'ob',
+            label='points used in fit'
+        )
+
+        # Fitted curve
+        plt.plot(
+            xplot, yplot, '-r',
+            linewidth=2,
+            label='fit'
+        )
+
+        # Reference lines
+        plt.axvline(
+            0,
+            color='k',
+            linestyle='--',
+            alpha=0.5,
+            label='x = 0'
+        )
+
+        plt.axvline(
+            result.params['xp0'].value,
+            color='m',
+            linestyle='--',
+            alpha=0.7,
+            label='fit xp0'
+        )
+
+        plt.axhline(
+            peak_height,
+            color='g',
+            linestyle=':',
+            alpha=0.7,
+            label=f'peak = {peak_height:.4g}'
+        )
+
+        plt.xlabel('x')
+        plt.ylabel('y')
+        plt.title(
+            f'Ridge fit (ridge_width={ridge_width}, '
+            f'cen_width={cen_width})'
+        )
+        plt.legend()
+        plt.grid(True)
+
+        print(result.fit_report())
+        print(f"Peak height at x = 0: {peak_height}")
+
+    return peak_height
